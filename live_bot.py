@@ -51,10 +51,26 @@ def fetch_klines(symbol):
     r = session.get(MEXC_URL, params={'symbol': symbol, 'interval': TIMEFRAME, 'limit': LIMIT}, timeout=15)
     r.raise_for_status()
     data = r.json()
+    if isinstance(data, dict):
+        raise RuntimeError(f'MEXC error for {symbol}: {data}')
     if not isinstance(data, list) or len(data) < 60:
-        raise RuntimeError(f'bad kline response for {symbol}')
-    # MEXC: open time, open, high, low, close, volume, close time, ...
-    df = pd.DataFrame(data, columns=['time','open','high','low','close','volume','close_time','qvol','trades','tb_base','tb_quote','ignore'])
+        raise RuntimeError(f'bad kline response for {symbol}: rows={len(data) if isinstance(data, list) else type(data).__name__}')
+
+    # MEXC spot /api/v3/klines normally returns 8 fields:
+    # [open_time, open, high, low, close, volume, close_time, quote_volume].
+    # Some compatible responses may contain additional fields, so parse only
+    # the fields required by the strategy instead of forcing 12 columns.
+    row_width = len(data[0]) if data and isinstance(data[0], (list, tuple)) else 0
+    if row_width < 6:
+        raise RuntimeError(f'unexpected kline width for {symbol}: {row_width}')
+    cols = ['time','open','high','low','close','volume','close_time','qvol']
+    if row_width >= len(cols):
+        df = pd.DataFrame([row[:len(cols)] for row in data], columns=cols)
+    else:
+        df = pd.DataFrame([row[:row_width] for row in data], columns=cols[:row_width])
+        missing = [c for c in cols[:6] if c not in df.columns]
+        if missing:
+            raise RuntimeError(f'missing kline fields for {symbol}: {missing}')
     for c in ['open','high','low','close','volume']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
     df['time'] = pd.to_datetime(df['time'], unit='ms', utc=True)

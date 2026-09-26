@@ -37,3 +37,7 @@ Optional environment variables:
 - `ATR_TARGET_MULT=3.0`
 
 The Telegram credentials are stored in `telegram_config.py` because that was explicitly requested. If the bot token has been exposed publicly, rotate it in BotFather before using the bot with real funds.
+
+
+## Railway fix
+The live MEXC parser accepts the standard 8-field /api/v3/klines response as well as longer compatible rows.
