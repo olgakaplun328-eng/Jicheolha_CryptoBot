@@ -25,6 +25,7 @@ RSI_OVERBOUGHT = float(os.getenv('RSI_OVERBOUGHT', '70'))
 RSI_OVERSOLD = float(os.getenv('RSI_OVERSOLD', '30'))
 ATR_STOP_MULT = float(os.getenv('ATR_STOP_MULT', '2.0'))
 ATR_TARGET_MULT = float(os.getenv('ATR_TARGET_MULT', '3.0'))
+TEST_MODE = os.getenv('TEST_MODE', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
 # The public Jicheolha README reports these core assets.
 SYMBOLS = [s.strip().upper() for s in os.getenv(
@@ -51,26 +52,17 @@ def fetch_klines(symbol):
     r = session.get(MEXC_URL, params={'symbol': symbol, 'interval': TIMEFRAME, 'limit': LIMIT}, timeout=15)
     r.raise_for_status()
     data = r.json()
-    if isinstance(data, dict):
-        raise RuntimeError(f'MEXC error for {symbol}: {data}')
     if not isinstance(data, list) or len(data) < 60:
-        raise RuntimeError(f'bad kline response for {symbol}: rows={len(data) if isinstance(data, list) else type(data).__name__}')
-
-    # MEXC spot /api/v3/klines normally returns 8 fields:
-    # [open_time, open, high, low, close, volume, close_time, quote_volume].
-    # Some compatible responses may contain additional fields, so parse only
-    # the fields required by the strategy instead of forcing 12 columns.
-    row_width = len(data[0]) if data and isinstance(data[0], (list, tuple)) else 0
-    if row_width < 6:
-        raise RuntimeError(f'unexpected kline width for {symbol}: {row_width}')
-    cols = ['time','open','high','low','close','volume','close_time','qvol']
-    if row_width >= len(cols):
-        df = pd.DataFrame([row[:len(cols)] for row in data], columns=cols)
+        raise RuntimeError(f'bad kline response for {symbol}')
+    # MEXC commonly returns 8 fields in the public spot endpoint; some
+    # responses/versions may include additional fields. Accept either form.
+    if len(data[0]) >= 12:
+        cols = ['time','open','high','low','close','volume','close_time','qvol','trades','tb_base','tb_quote','ignore']
+    elif len(data[0]) >= 8:
+        cols = ['time','open','high','low','close','volume','close_time','qvol'] + [f'extra_{i}' for i in range(len(data[0]) - 8)]
     else:
-        df = pd.DataFrame([row[:row_width] for row in data], columns=cols[:row_width])
-        missing = [c for c in cols[:6] if c not in df.columns]
-        if missing:
-            raise RuntimeError(f'missing kline fields for {symbol}: {missing}')
+        raise RuntimeError(f'unexpected kline field count for {symbol}: {len(data[0])}')
+    df = pd.DataFrame(data, columns=cols)
     for c in ['open','high','low','close','volume']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
     df['time'] = pd.to_datetime(df['time'], unit='ms', utc=True)
@@ -128,7 +120,51 @@ def scan_once():
         time.sleep(0.35)
     return signals
 
+def run_test_mode():
+    """Send one deterministic Telegram test signal without querying MEXC or placing orders."""
+    atr_value = 100.0
+    entry_value = 60000.0
+    sl_value = entry_value - 2 * atr_value
+    tp1_value = entry_value + 2 * atr_value
+    tp2_value = entry_value + 3 * atr_value
+
+    class TestSignal:
+        symbol = "BTCUSDT"
+        direction = "LONG"
+        entry = entry_value
+        stop_loss = sl_value
+        take_profit_1 = tp1_value
+        take_profit_2 = tp2_value
+        atr = atr_value
+        reasons = [
+            "TEST MODE",
+            "Synthetic signal — no real market data",
+            "No exchange order will be placed",
+        ]
+
+    msg = (
+        "🧪 TEST MODE — це тестове повідомлення. Угода НЕ відкривається.\\n\\n"
+        f"📊 {TestSignal.symbol} {TestSignal.direction}\\n"
+        f"Entry: {TestSignal.entry:.2f}\\n"
+        f"SL: {TestSignal.stop_loss:.2f}\\n"
+        f"TP1: {TestSignal.take_profit_1:.2f}\\n"
+        f"TP2: {TestSignal.take_profit_2:.2f}\\n"
+        f"ATR: {TestSignal.atr:.2f}\\n\\n"
+        "Telegram connection test successful."
+    )
+    telegram(msg)
+    log.info("TEST MODE Telegram message sent | %s", TestSignal.symbol)
+
 def main():
+    if TEST_MODE:
+        log.info('TEST MODE enabled | no MEXC scan | no exchange orders')
+        try:
+            run_test_mode()
+        except Exception as e:
+            log.exception('TEST MODE failed: %s', e)
+            raise
+        return
+
     log.info('KELTRADER LIVE started | %d symbols | timeframe=%s | poll=%ss', len(SYMBOLS), TIMEFRAME, POLL_SECONDS)
     log.info('Mode=alert-only | MEXC=%s', MEXC_URL)
     while True:
